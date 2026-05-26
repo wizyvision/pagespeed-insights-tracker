@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import {
   initializeApp,
   getApps,
+  applicationDefault,
   cert,
   type ServiceAccount,
 } from "firebase-admin/app";
@@ -17,24 +18,11 @@ function resolveProjectId(): string | undefined {
   );
 }
 
-function assertFirebaseConfig(projectId: string | undefined): string {
-  const hasServiceAccountKey = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-  const hasCredentialsFile = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
-
-  if (!projectId && !hasServiceAccountKey && !hasCredentialsFile) {
-    throw new Error(
-      "Firebase is not configured. Add FIREBASE_PROJECT_ID=wizy-psi-tracker to .env and either " +
-        "GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json or FIREBASE_SERVICE_ACCOUNT_KEY={...json...}"
-    );
-  }
-
-  if (!projectId) {
-    throw new Error(
-      "FIREBASE_PROJECT_ID is missing from .env (use your Firebase project id, e.g. wizy-psi-tracker)."
-    );
-  }
-
-  return projectId;
+function hasExplicitCredentials(): boolean {
+  return (
+    Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY) ||
+    Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+  );
 }
 
 function parseServiceAccount(
@@ -47,7 +35,7 @@ function parseServiceAccount(
   };
 }
 
-function loadServiceAccount(projectId: string): ServiceAccount {
+function loadServiceAccountFromFileOrEnv(projectId: string): ServiceAccount {
   const inlineJson = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
   if (inlineJson) {
     return parseServiceAccount(
@@ -59,7 +47,7 @@ function loadServiceAccount(projectId: string): ServiceAccount {
   const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (!credentialsPath) {
     throw new Error(
-      "Set GOOGLE_APPLICATION_CREDENTIALS to your service account JSON path, or FIREBASE_SERVICE_ACCOUNT_KEY."
+      "Set GOOGLE_APPLICATION_CREDENTIALS (local dev only) or FIREBASE_SERVICE_ACCOUNT_KEY."
     );
   }
 
@@ -80,12 +68,32 @@ function loadServiceAccount(projectId: string): ServiceAccount {
 export function getAdminApp() {
   if (getApps().length > 0) return getApps()[0]!;
 
-  const projectId = assertFirebaseConfig(resolveProjectId());
-  const serviceAccount = loadServiceAccount(projectId);
+  const projectId = resolveProjectId();
+
+  // Local dev: use downloaded service account JSON via .env
+  if (hasExplicitCredentials()) {
+    if (!projectId) {
+      throw new Error(
+        "FIREBASE_PROJECT_ID is required in .env when using GOOGLE_APPLICATION_CREDENTIALS."
+      );
+    }
+    const serviceAccount = loadServiceAccountFromFileOrEnv(projectId);
+    return initializeApp({
+      credential: cert(serviceAccount),
+      projectId: serviceAccount.projectId ?? projectId,
+    });
+  }
+
+  // App Hosting / Cloud Run: built-in service account (no JSON file)
+  if (!projectId) {
+    throw new Error(
+      "FIREBASE_PROJECT_ID is not set. Add it to apphosting.yaml for production or .env for local dev."
+    );
+  }
 
   return initializeApp({
-    credential: cert(serviceAccount),
-    projectId: serviceAccount.projectId ?? projectId,
+    credential: applicationDefault(),
+    projectId,
   });
 }
 
